@@ -6,28 +6,40 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
+// MongoDB Connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.da9dhi6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+
 const client = new MongoClient(uri, {
-  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
 });
 
 async function run() {
   try {
+    // Connect to DB
     await client.connect();
+    console.log("✅ Successfully connected to MongoDB Cluster!");
+
     const db = client.db("assetFlowDB");
     const usersCollection = db.collection("users");
     const assetsCollection = db.collection("assets");
     const requestsCollection = db.collection("requests");
 
-    // --- Users API ---
+    // ================== USERS API ==================
     app.post("/users", async (req, res) => {
       const user = req.body;
       const existingUser = await usersCollection.findOne({ email: user.email });
-      if (existingUser) return res.send({ message: "exists", insertedId: null });
-      res.send(await usersCollection.insertOne(user));
+      if (existingUser)
+        return res.send({ message: "user already exists", insertedId: null });
+      const result = await usersCollection.insertOne(user);
+      res.send(result);
     });
 
     app.get("/users/role/:email", async (req, res) => {
@@ -35,46 +47,118 @@ async function run() {
       res.send(user || { role: null });
     });
 
-    // --- Assets API ---
-    app.post("/assets", async (req, res) => res.send(await assetsCollection.insertOne(req.body)));
+    // ================== ASSETS API ==================
+    app.post("/assets", async (req, res) => {
+      const asset = req.body;
+      const result = await assetsCollection.insertOne(asset);
+      res.send(result);
+    });
+
     app.get("/assets", async (req, res) => {
-      const query = req.query.email ? { hrEmail: req.query.email } : {};
-      res.send(await assetsCollection.find(query).toArray());
+      const email = req.query.email;
+      const query = email ? { hrEmail: email } : {};
+      const result = await assetsCollection.find(query).toArray();
+      res.send(result);
     });
 
-    // --- Requests API ---
-    app.post("/requests", async (req, res) => res.send(await requestsCollection.insertOne(req.body)));
-    
+    app.delete("/assets/:id", async (req, res) => {
+      const result = await assetsCollection.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.send(result);
+    });
+
+    // ================== REQUESTS API ==================
+
+    // ১. নতুন রিকোয়েস্ট তৈরি করা
+    app.post("/requests", async (req, res) => {
+      const request = req.body;
+      const result = await requestsCollection.insertOne(request);
+      res.send(result);
+    });
+
+    // ২. HR-এর জন্য সব রিকোয়েস্ট দেখা
     app.get("/hr-requests/:email", async (req, res) => {
-      res.send(await requestsCollection.find({ hrEmail: req.params.email }).toArray());
+      const email = req.params.email;
+      const result = await requestsCollection.find({ hrEmail: email }).toArray();
+      res.send(result);
     });
 
+    // ৩. এমপ্লয়ির নিজের রিকোয়েস্ট দেখা
     app.get("/my-requests/:email", async (req, res) => {
-      res.send(await requestsCollection.find({ requesterEmail: req.params.email }).toArray());
+      const email = req.params.email;
+      const result = await requestsCollection
+        .find({ requesterEmail: email })
+        .toArray();
+      res.send(result);
     });
 
-    // APPROVE
+    // ৪. রিকোয়েস্ট ডিলিট বা ক্যানসেল করা
+    app.delete("/requests/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await requestsCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // ৫. রিকোয়েস্ট Approve করা (Updated with Employee List Logic)
     app.patch("/requests/approve/:id", async (req, res) => {
+      const id = req.params.id;
       const { assetId, requesterEmail, hrEmail } = req.body;
-      await requestsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status: "approved", approvalDate: new Date() } });
-      await assetsCollection.updateOne({ _id: new ObjectId(assetId) }, { $inc: { productQuantity: -1 } });
-      res.send(await usersCollection.updateOne({ email: requesterEmail }, { $set: { hrEmail: hrEmail } }));
+
+      // ক. রিকোয়েস্ট স্ট্যাটাস আপডেট
+      await requestsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: { status: "approved", approvalDate: new Date().toISOString() },
+        }
+      );
+
+      // খ. অ্যাসেট কোয়ান্টিটি কমানো
+      await assetsCollection.updateOne(
+        { _id: new ObjectId(assetId) },
+        { $inc: { productQuantity: -1 } }
+      );
+
+      // গ. এমপ্লয়ির প্রোফাইলে HR-এর লিঙ্ক তৈরি করা (যাতে My Employee লিস্টে আসে)
+      const result = await usersCollection.updateOne(
+        { email: requesterEmail },
+        { $set: { hrEmail: hrEmail } }
+      );
+
+      res.send(result);
     });
 
-    // REJECT
+    // ৬. রিকোয়েস্ট Reject করা
     app.patch("/requests/reject/:id", async (req, res) => {
-      res.send(await requestsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status: "rejected" } }));
+      const id = req.params.id;
+      const result = await requestsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "rejected" } },
+      );
+      res.send(result);
     });
 
-    // RETURN
-    app.patch("/requests/return/:id", async (req, res) => {
-      const { assetId } = req.body;
-      await requestsCollection.updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status: "returned" } });
-      res.send(await assetsCollection.updateOne({ _id: new ObjectId(assetId) }, { $inc: { productQuantity: 1 } }));
+    // ================== MY EMPLOYEES API ==================
+    app.get("/my-employees/:hrEmail", async (req, res) => {
+      const email = req.params.hrEmail;
+      const result = await usersCollection
+        .find({ hrEmail: email, role: "employee" })
+        .toArray();
+      res.send(result);
     });
 
-  } finally {}
+    app.get("/my-employees/:hrEmail", async (req, res) => {
+    const email = req.params.hrEmail;
+    const result = await usersCollection.find({ hrEmail: email, role: "employee" }).toArray();
+    res.send(result);
+});
+
+  } catch (err) {
+    console.error("❌ DB error:", err.message);
+  }
 }
 run().catch(console.dir);
-app.get("/", (req, res) => res.send("Running"));
-app.listen(port);
+
+app.get("/", (req, res) => res.send("AssetFlow Server is running"));
+app.listen(port, () => console.log(`🚀 Server listening on port ${port}`));
