@@ -66,7 +66,7 @@ async function run() {
       res.send(result);
     });
 
-    // কোয়ান্টিটি আপডেট করার ফিক্সড এপিআই
+    // কোয়ান্টিটি আপডেট করার ফিক্সড এপিআই
     app.patch("/assets/update/:id", async (req, res) => {
       const id = req.params.id;
       const { productQuantity } = req.body;
@@ -114,7 +114,7 @@ async function run() {
       res.send(result);
     });
 
-    // ৫. রিকোয়েস্ট Approve করা
+    // ৫. রিকোয়েস্ট Approve করা (স্লট লিমিট চেকসহ)
     app.patch("/requests/approve/:id", async (req, res) => {
       const id = req.params.id;
       const { assetId, requesterEmail, hrEmail } = req.body;
@@ -161,14 +161,58 @@ async function run() {
       res.send(result);
     });
 
+    // ================== EMPLOYEE MANAGEMENT ==================
     app.get("/my-employees/:hrEmail", async (req, res) => {
       const result = await usersCollection.find({ hrEmail: req.params.hrEmail, role: "employee" }).toArray();
       res.send(result);
     });
 
+    // মেম্বার রিমুভ করার API (অ্যাসেট চেকসহ সিকিউরড ভার্সন)
     app.delete("/remove-employee/:email", async (req, res) => {
       const { email } = req.params;
-      const result = await usersCollection.updateOne({ email: email }, { $unset: { hrEmail: "" } });
+      
+      const hasActiveAsset = await requestsCollection.findOne({ 
+          requesterEmail: email, 
+          status: { $in: ["pending", "approved"] } 
+      });
+
+      if (hasActiveAsset) {
+          return res.status(400).send({ message: "Cannot remove! Employee still has assets." });
+      }
+
+      const result = await usersCollection.updateOne(
+          { email: email },
+          { $unset: { hrEmail: "" } } 
+      );
+      res.send(result);
+    });
+
+    // ================== PACKAGE SYSTEM API ==================
+    
+    // HR এর বর্তমান প্যাকেজ স্ট্যাটাস দেখার API
+    app.get("/hr-package-status/:email", async (req, res) => {
+      const email = req.params.email;
+      const hr = await usersCollection.findOne({ email: email });
+      const currentMemberCount = await usersCollection.countDocuments({ hrEmail: email, role: "employee" });
+      
+      res.send({
+        packageType: hr?.packageType || "Basic", 
+        limit: hr?.packageLimit || 5,           
+        used: currentMemberCount
+      });
+    });
+
+    // প্যাকেজ মেম্বারশিপ আপডেট করার API
+    app.patch("/update-package", async (req, res) => {
+      const { email, packageType, newLimit } = req.body;
+      const result = await usersCollection.updateOne(
+        { email: email },
+        { $set: { 
+            packageType: packageType, 
+            packageLimit: parseInt(newLimit) 
+          } 
+        }
+      );
       res.send(result);
     });
 
