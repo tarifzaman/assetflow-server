@@ -50,7 +50,12 @@ async function run() {
     // ================== ASSETS API ==================
     app.post("/assets", async (req, res) => {
       const asset = req.body;
-      const result = await assetsCollection.insertOne(asset);
+      const newAsset = {
+        ...asset,
+        productQuantity: parseInt(asset.productQuantity),
+        addedDate: asset.addedDate || new Date().toISOString()
+      };
+      const result = await assetsCollection.insertOne(newAsset);
       res.send(result);
     });
 
@@ -58,6 +63,20 @@ async function run() {
       const email = req.query.email;
       const query = email ? { hrEmail: email } : {};
       const result = await assetsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // কোয়ান্টিটি আপডেট করার ফিক্সড এপিআই
+    app.patch("/assets/update/:id", async (req, res) => {
+      const id = req.params.id;
+      const { productQuantity } = req.body;
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          productQuantity: parseInt(productQuantity), // সংখ্যা নিশ্চিত করা
+        },
+      };
+      const result = await assetsCollection.updateOne(filter, updatedDoc);
       res.send(result);
     });
 
@@ -69,31 +88,25 @@ async function run() {
     });
 
     // ================== REQUESTS API ==================
-
-    // ১. নতুন রিকোয়েস্ট তৈরি করা
     app.post("/requests", async (req, res) => {
       const request = req.body;
       const result = await requestsCollection.insertOne(request);
       res.send(result);
     });
 
-    // ২. HR-এর জন্য সব রিকোয়েস্ট দেখা
     app.get("/hr-requests/:email", async (req, res) => {
       const email = req.params.email;
       const result = await requestsCollection.find({ hrEmail: email }).toArray();
       res.send(result);
     });
 
-    // ৩. এমপ্লয়ির নিজের রিকোয়েস্ট দেখা
     app.get("/my-requests/:email", async (req, res) => {
       const email = req.params.email;
-      const result = await requestsCollection
-        .find({ requesterEmail: email })
-        .toArray();
+      const query = { requesterEmail: email };
+      const result = await requestsCollection.find(query).toArray();
       res.send(result);
     });
 
-    // ৪. রিকোয়েস্ট ডিলিট বা ক্যানসেল করা
     app.delete("/requests/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -101,35 +114,33 @@ async function run() {
       res.send(result);
     });
 
-    // ৫. রিকোয়েস্ট Approve করা (Updated with Employee List Logic)
+    // ৫. রিকোয়েস্ট Approve করা
     app.patch("/requests/approve/:id", async (req, res) => {
       const id = req.params.id;
       const { assetId, requesterEmail, hrEmail } = req.body;
+      const hr = await usersCollection.findOne({ email: hrEmail });
+      const count = await usersCollection.countDocuments({ hrEmail: hrEmail, role: "employee" });
+      const limit = hr?.packageLimit || 5;
 
-      // ক. রিকোয়েস্ট স্ট্যাটাস আপডেট
+      if (count >= limit) {
+        return res.status(400).send({ message: "Limit reached" });
+      }
+
       await requestsCollection.updateOne(
         { _id: new ObjectId(id) },
-        {
-          $set: { status: "approved", approvalDate: new Date().toISOString() },
-        }
+        { $set: { status: "approved", approvalDate: new Date().toISOString() } }
       );
-
-      // খ. অ্যাসেট কোয়ান্টিটি কমানো
       await assetsCollection.updateOne(
         { _id: new ObjectId(assetId) },
         { $inc: { productQuantity: -1 } }
       );
-
-      // গ. এমপ্লয়ির প্রোফাইলে HR-এর লিঙ্ক তৈরি করা (যাতে My Employee লিস্টে আসে)
       const result = await usersCollection.updateOne(
         { email: requesterEmail },
         { $set: { hrEmail: hrEmail } }
       );
-
       res.send(result);
     });
 
-    // ৬. রিকোয়েস্ট Reject করা
     app.patch("/requests/reject/:id", async (req, res) => {
       const id = req.params.id;
       const result = await requestsCollection.updateOne(
@@ -139,20 +150,27 @@ async function run() {
       res.send(result);
     });
 
-    // ================== MY EMPLOYEES API ==================
-    app.get("/my-employees/:hrEmail", async (req, res) => {
-      const email = req.params.hrEmail;
-      const result = await usersCollection
-        .find({ hrEmail: email, role: "employee" })
-        .toArray();
+    app.patch("/requests/return/:id", async (req, res) => {
+      const id = req.params.id;
+      const { assetId } = req.body;
+      await requestsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: "returned" } });
+      const result = await assetsCollection.updateOne(
+        { _id: new ObjectId(assetId) },
+        { $inc: { productQuantity: 1 } }
+      );
       res.send(result);
     });
 
     app.get("/my-employees/:hrEmail", async (req, res) => {
-    const email = req.params.hrEmail;
-    const result = await usersCollection.find({ hrEmail: email, role: "employee" }).toArray();
-    res.send(result);
-});
+      const result = await usersCollection.find({ hrEmail: req.params.hrEmail, role: "employee" }).toArray();
+      res.send(result);
+    });
+
+    app.delete("/remove-employee/:email", async (req, res) => {
+      const { email } = req.params;
+      const result = await usersCollection.updateOne({ email: email }, { $unset: { hrEmail: "" } });
+      res.send(result);
+    });
 
   } catch (err) {
     console.error("❌ DB error:", err.message);
